@@ -1,0 +1,34 @@
+[package]
+name = "rdrkit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "Read-only access to indexed R-Drive Image RDR disk-image objects"
+repository = "https://github.com/mussolene/rdrkit"
+homepage = "https://github.com/mussolene/rdrkit"
+readme = "README.md"
+keywords = ["disk-image", "forensics", "recovery", "rdr", "ntfs"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.1"
+nfsserve = "0.11"
+tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync"] }
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"

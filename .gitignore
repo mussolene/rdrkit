@@ -1,0 +1,40 @@
+# Rust build output
+/target/
+
+# Local disk images and generated block-device views
+*.rdr
+*.rdr.*
+*.rdridx
+*.raw
+*.img
+*.iso
+*.vhd
+*.vhdx
+*.qcow2
+
+# Runtime state
+*.log
+*.pid
+*.sock
+.rdrkit/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Coverage and profiling
+coverage/
+*.profraw
+*.profdata

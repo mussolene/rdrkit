@@ -1,0 +1,10 @@
+title = "rdrkit gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public documentation URLs and checksums are allowed; secrets are not."
+paths = [
+  '''Cargo\.lock''',
+]
