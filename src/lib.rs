@@ -13,6 +13,8 @@ use nfsserve::nfs::{
 use nfsserve::tcp::{NFSTcp, NFSTcpListener};
 use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
 
+mod session;
+
 const MAGIC: u32 = 0xd754_da33;
 const FILE_HEADER_SIZE: u64 = 52;
 const RAW_DATA_FLAGS: u32 = 0x1800_0020;
@@ -72,7 +74,40 @@ enum Command {
 
         #[arg(long, default_value = "127.0.0.1:11111")]
         listen: String,
+
+        /// Write the selected listen port after the server is ready.
+        #[arg(long, hide = true)]
+        ready_file: Option<PathBuf>,
     },
+
+    /// Attach an indexed object and mount its recognized volumes read-only.
+    Mount {
+        image: PathBuf,
+
+        /// Object to attach. Required non-interactively when the image has several objects.
+        #[arg(long)]
+        object: Option<u32>,
+    },
+
+    /// Detach a mount session by session id or image path.
+    Unmount { target: String },
+
+    /// Show known mount sessions.
+    Status,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ObjectInfo {
+    pub id: u32,
+    pub logical_size: u64,
+    pub chunks: usize,
+    pub chunk_size: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImageInfo {
+    pub physical_size: u64,
+    pub objects: Vec<ObjectInfo>,
 }
 
 #[derive(Debug)]
@@ -148,11 +183,34 @@ pub fn run() -> Result<()> {
             image,
             object,
             listen,
-        } => serve(&image, object, &listen),
+            ready_file,
+        } => serve(&image, object, &listen, ready_file.as_deref()),
+        Command::Mount { image, object } => session::mount(&image, object),
+        Command::Unmount { target } => session::unmount(&target),
+        Command::Status => session::status(),
     }
 }
 
 fn list_objects(image: &Path) -> Result<()> {
+    let info = image_info(image)?;
+    println!(
+        "image={} size={}",
+        image.display(),
+        human_bytes(info.physical_size)
+    );
+    for object in info.objects {
+        println!(
+            "object={} size={} chunks={} chunk_size={}",
+            object.id,
+            human_bytes(object.logical_size),
+            object.chunks,
+            human_bytes(u64::from(object.chunk_size))
+        );
+    }
+    Ok(())
+}
+
+pub fn image_info(image: &Path) -> Result<ImageInfo> {
     let mut input = File::open(image).with_context(|| format!("open {}", image.display()))?;
     let actual_size = input.metadata()?.len();
     let header = read_file_header(&mut input)?;
@@ -175,23 +233,21 @@ fn list_objects(image: &Path) -> Result<()> {
         "archive contains no compact chunk indexes"
     );
 
-    println!(
-        "image={} size={}",
-        image.display(),
-        human_bytes(actual_size)
-    );
+    let mut objects = Vec::with_capacity(indexes.len());
     for frame in indexes {
         let (logical_size, chunk_size, records) =
             read_chunk_index(&mut input, actual_size, &frame, frame.object_id)?;
-        println!(
-            "object={} size={} chunks={} chunk_size={}",
-            frame.object_id,
-            human_bytes(logical_size),
-            records.len(),
-            human_bytes(u64::from(chunk_size))
-        );
+        objects.push(ObjectInfo {
+            id: frame.object_id,
+            logical_size,
+            chunks: records.len(),
+            chunk_size,
+        });
     }
-    Ok(())
+    Ok(ImageInfo {
+        physical_size: actual_size,
+        objects,
+    })
 }
 
 const ROOT_FILE_ID: fileid3 = 1;
@@ -469,7 +525,7 @@ impl NFSFileSystem for IndexedObject {
     }
 }
 
-fn serve(image: &Path, object_index: u32, listen: &str) -> Result<()> {
+fn serve(image: &Path, object_index: u32, listen: &str, ready_file: Option<&Path>) -> Result<()> {
     let indexed = index_object(image, object_index)?;
     println!(
         "indexed object={} size={} records={} file={}",
@@ -483,7 +539,14 @@ fn serve(image: &Path, object_index: u32, listen: &str) -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let listener = NFSTcpListener::bind(listen, indexed).await?;
-        listener.handle_forever().await
+        let listen_port = listener.get_listen_port();
+        println!("NFS ready_port={listen_port}");
+        if let Some(path) = ready_file {
+            std::fs::write(path, listen_port.to_string())
+                .with_context(|| format!("write readiness file {}", path.display()))?;
+        }
+        listener.handle_forever().await?;
+        Ok::<(), anyhow::Error>(())
     })?;
     Ok(())
 }
