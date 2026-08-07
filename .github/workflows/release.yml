@@ -82,9 +82,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          release_flags=()
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            release_flags+=(--prerelease --latest=false)
+            release_flags+=(--notes "Release candidate: native privileged Linux mount and interrupted-cleanup validation remain required before the stable release.")
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             dist/*.tar.gz dist/SHA256SUMS \
             --repo "${GITHUB_REPOSITORY}" \
             --verify-tag \
             --generate-notes \
-            --title "${GITHUB_REF_NAME}"
+            --title "${GITHUB_REF_NAME}" \
+            "${release_flags[@]}"
