@@ -17,7 +17,8 @@ fixtures or independently redistributable data.
 `tests/fixtures/empty-disk-zlib.rdr` and `empty-disk-raw.rdr` are deterministic
 synthetic containers. Each contains one zero-filled 1 MiB logical disk split
 into 256 KiB chunks. The first uses zlib-compressed data records and the second
-uses raw data records. Neither contains a filesystem or user data. Regenerate
+uses raw data records. Their compact chunk indexes use the matching zlib and
+raw encodings as well. Neither contains a filesystem or user data. Regenerate
 both with:
 
 ```sh
