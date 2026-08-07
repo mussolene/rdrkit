@@ -6,6 +6,13 @@ All notable changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Versioned JSON output for object discovery and managed mount-session commands.
+- Native macOS application with Finder file association, drag and drop, object
+  selection, mount-all operation, session status, Finder access, and unmount.
+- Reproducible macOS application bundle assembly with local code signing.
+
 ## [0.2.0-rc.1] - 2026-08-07
 
 ### Added
@@ -27,7 +34,6 @@ All notable changes are documented here. The project follows
 
 ### Planned
 
-- Lightweight macOS application and `.rdr` file association.
 - Additional RDR variants and integrity metadata.
 
 ### Known limitations

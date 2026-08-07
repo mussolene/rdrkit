@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::{human_bytes, image_info, ObjectInfo};
+use crate::{human_bytes, image_info, print_json, ObjectInfo};
 
 const READY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -38,7 +38,7 @@ struct MountSession {
     created_unix_seconds: u64,
 }
 
-pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
+pub(crate) fn mount(image: &Path, requested_object: Option<u32>, json: bool) -> Result<()> {
     ensure_supported_host()?;
     let image = image
         .canonicalize()
@@ -113,6 +113,18 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
         };
     }
 
+    if json {
+        return print_json(&serde_json::json!({
+            "schema_version": 1,
+            "session_id": session.id,
+            "state": "active",
+            "image": session.image,
+            "object": object.id,
+            "logical_size": object.logical_size,
+            "device": session.device,
+            "volumes": session.volumes,
+        }));
+    }
     println!(
         "mounted session={} object={} size={} device={}",
         session.id,
@@ -133,7 +145,7 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn unmount(target: &str) -> Result<()> {
+pub(crate) fn unmount(target: &str, json: bool) -> Result<()> {
     ensure_supported_host()?;
     let directory = resolve_session(target)?;
     let mut session = read_session(&directory)?;
@@ -144,28 +156,51 @@ pub(crate) fn unmount(target: &str) -> Result<()> {
     stop_server(&session)?;
     fs::remove_dir_all(&directory)
         .with_context(|| format!("remove session directory {}", directory.display()))?;
-    println!(
-        "unmounted session={} image={}",
-        session.id,
-        session.image.display()
-    );
+    if json {
+        print_json(&serde_json::json!({
+            "schema_version": 1,
+            "session_id": session.id,
+            "state": "unmounted",
+            "image": session.image,
+        }))?;
+    } else {
+        println!(
+            "unmounted session={} image={}",
+            session.id,
+            session.image.display()
+        );
+    }
     Ok(())
 }
 
-pub(crate) fn status() -> Result<()> {
+pub(crate) fn status(json: bool) -> Result<()> {
     let sessions = load_sessions()?;
+    if json {
+        let sessions: Vec<_> = sessions
+            .into_iter()
+            .map(|(_, session)| {
+                let state = session_state(&session);
+                serde_json::json!({
+                    "session_id": session.id,
+                    "state": state,
+                    "image": session.image,
+                    "object": session.object,
+                    "device": session.device,
+                    "volumes": session.volumes,
+                })
+            })
+            .collect();
+        return print_json(&serde_json::json!({
+            "schema_version": 1,
+            "sessions": sessions,
+        }));
+    }
     if sessions.is_empty() {
         println!("no rdrkit mount sessions");
         return Ok(());
     }
     for (_, session) in sessions {
-        let state = if !server_is_running(&session) {
-            "stale"
-        } else if session.complete {
-            "active"
-        } else {
-            "incomplete"
-        };
+        let state = session_state(&session);
         println!(
             "session={} state={} image={} object={} device={} volumes={}",
             session.id,
@@ -177,6 +212,16 @@ pub(crate) fn status() -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn session_state(session: &MountSession) -> &'static str {
+    if !server_is_running(session) {
+        "stale"
+    } else if session.complete {
+        "active"
+    } else {
+        "incomplete"
+    }
 }
 
 fn ensure_supported_host() -> Result<()> {

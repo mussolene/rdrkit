@@ -12,6 +12,7 @@ use nfsserve::nfs::{
 };
 use nfsserve::tcp::{NFSTcp, NFSTcpListener};
 use nfsserve::vfs::{DirEntry, NFSFileSystem, ReadDirResult, VFSCapabilities};
+use serde::Serialize;
 
 mod session;
 
@@ -39,7 +40,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// List indexed objects without scanning the complete image.
-    List { image: PathBuf },
+    List {
+        image: PathBuf,
+
+        /// Print a stable machine-readable response.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Scan record headers and report discovered RDR objects.
     Inspect {
@@ -87,16 +94,30 @@ enum Command {
         /// Object to attach. Required non-interactively when the image has several objects.
         #[arg(long)]
         object: Option<u32>,
+
+        /// Print a stable machine-readable response.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Detach a mount session by session id or image path.
-    Unmount { target: String },
+    Unmount {
+        target: String,
+
+        /// Print a stable machine-readable response.
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Show known mount sessions.
-    Status,
+    Status {
+        /// Print a stable machine-readable response.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ObjectInfo {
     pub id: u32,
     pub logical_size: u64,
@@ -104,7 +125,7 @@ pub struct ObjectInfo {
     pub chunk_size: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ImageInfo {
     pub physical_size: u64,
     pub objects: Vec<ObjectInfo>,
@@ -171,7 +192,7 @@ impl ObjectStats {
 
 pub fn run() -> Result<()> {
     match Cli::parse().command {
-        Command::List { image } => list_objects(&image),
+        Command::List { image, json } => list_objects(&image, json),
         Command::Inspect { image, max_records } => inspect(&image, max_records),
         Command::Extract {
             image,
@@ -185,14 +206,26 @@ pub fn run() -> Result<()> {
             listen,
             ready_file,
         } => serve(&image, object, &listen, ready_file.as_deref()),
-        Command::Mount { image, object } => session::mount(&image, object),
-        Command::Unmount { target } => session::unmount(&target),
-        Command::Status => session::status(),
+        Command::Mount {
+            image,
+            object,
+            json,
+        } => session::mount(&image, object, json),
+        Command::Unmount { target, json } => session::unmount(&target, json),
+        Command::Status { json } => session::status(json),
     }
 }
 
-fn list_objects(image: &Path) -> Result<()> {
+fn list_objects(image: &Path, json: bool) -> Result<()> {
     let info = image_info(image)?;
+    if json {
+        return print_json(&serde_json::json!({
+            "schema_version": 1,
+            "image": image,
+            "physical_size": info.physical_size,
+            "objects": info.objects,
+        }));
+    }
     println!(
         "image={} size={}",
         image.display(),
@@ -207,6 +240,13 @@ fn list_objects(image: &Path) -> Result<()> {
             human_bytes(u64::from(object.chunk_size))
         );
     }
+    Ok(())
+}
+
+pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<()> {
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer(&mut stdout, value)?;
+    writeln!(stdout)?;
     Ok(())
 }
 

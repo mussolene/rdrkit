@@ -48,3 +48,11 @@ jobs:
 
       - name: Verify CLI
         run: target/release/rdrkit --version
+
+      - name: Test macOS application core
+        if: runner.os == 'macOS'
+        run: swift test --package-path macos/RDRKitApp
+
+      - name: Build and verify macOS application
+        if: runner.os == 'macOS'
+        run: ./scripts/build-macos-app.sh

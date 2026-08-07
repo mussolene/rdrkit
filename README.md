@@ -44,7 +44,43 @@ validation remains required before the stable `v0.2.0` release.
 
 ## Quick start
 
-### 1. Install
+### macOS application
+
+The lightweight native application is the easiest option on macOS. It bundles
+the command-line engine and registers itself as a viewer for `.rdr` files. The
+application never writes to the source image.
+
+Build and install it locally:
+
+```sh
+./scripts/build-macos-app.sh
+sudo ditto target/macos/RDRKit.app /Applications/RDRKit.app
+open /Applications/RDRKit.app
+```
+
+After the first launch, macOS includes RDRKit in Finder's **Open With** menu for
+`.rdr` files. To make it the default, select an image in Finder, choose **Get
+Info**, select RDRKit under **Open with**, and click **Change All**. The project
+does not override the user's default application automatically.
+
+Open an image from the application, drag it onto the window, or double-click an
+associated `.rdr` file. An image with one disk object is mounted immediately.
+For an image with several objects, the largest is selected as the recommended
+choice. You can mount the selected object or mount every object as an
+independent managed session. The Mounted Disks section opens recognized volumes
+in Finder and unmounts complete sessions.
+
+The local build uses an ad hoc signature. A downloadable application should be
+signed with a Developer ID certificate and notarized before general
+distribution. Set `RDRKIT_CODESIGN_IDENTITY` when building with an available
+certificate:
+
+```sh
+RDRKIT_CODESIGN_IDENTITY="Developer ID Application: Example" \
+  ./scripts/build-macos-app.sh
+```
+
+### Command-line installation
 
 Download the archive for your platform from
 [GitHub Releases](https://github.com/mussolene/rdrkit/releases), verify it with
@@ -68,7 +104,7 @@ cargo build --release --locked
 sudo install -m 0755 target/release/rdrkit /usr/local/bin/rdrkit
 ```
 
-### 2. Mount an image
+### Mount an image
 
 ```sh
 rdrkit mount backup.rdr
@@ -89,7 +125,7 @@ prints a session id, attached device, and resulting mount points.
 On Linux the command invokes `sudo` for NFS, loop-device, and filesystem mount
 operations. The `rdrkit` server itself remains an unprivileged process.
 
-### 3. Inspect and unmount
+### Inspect and unmount
 
 ```sh
 rdrkit status
@@ -208,16 +244,16 @@ for example `sudo mount -t ntfs3 -o ro ...`.
 ## Commands
 
 ```text
-rdrkit list IMAGE.rdr
+rdrkit list IMAGE.rdr [--json]
     List indexed objects quickly.
 
-rdrkit mount IMAGE.rdr [--object N]
+rdrkit mount IMAGE.rdr [--object N] [--json]
     Attach an object and mount recognized filesystems read-only.
 
-rdrkit status
+rdrkit status [--json]
     Show active and stale managed mount sessions.
 
-rdrkit unmount SESSION_OR_IMAGE
+rdrkit unmount SESSION_OR_IMAGE [--json]
     Tear down a managed mount session in reverse order.
 
 rdrkit serve IMAGE.rdr --object N [--listen 127.0.0.1:11111]
@@ -231,6 +267,13 @@ rdrkit inspect IMAGE.rdr [--max-records N]
 ```
 
 Run `rdrkit --help` or `rdrkit <command> --help` for current options.
+
+### Machine-readable interface
+
+`list`, `mount`, `status`, and `unmount` accept `--json`. Successful responses
+contain `schema_version: 1` and use byte counts rather than formatted sizes.
+Errors remain on standard error with a nonzero exit status. This interface is
+intended for the macOS application and other local frontends.
 
 ## How it works
 
