@@ -200,12 +200,14 @@ fn parse_session_id(output: &str) -> Option<String> {
 fn wait_for_process_exit(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(5) {
-        let status = Command::new("/bin/kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()?;
-        if !status.success() {
+        let output = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()?;
+        if !output.status.success()
+            || String::from_utf8_lossy(&output.stdout)
+                .trim_start()
+                .starts_with('Z')
+        {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(25));
