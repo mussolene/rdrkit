@@ -13,6 +13,14 @@ const RAW_CHUNK_INDEX_FLAGS: u32 = 0x0800_0090;
 const ARCHIVE_DIRECTORY_FLAGS: u32 = 0x0000_0008;
 const DIRECTORY_POINTER_FLAGS: u32 = 0x0000_0003;
 
+const EMPTY_DISK_SIZES: [u64; 5] = [
+    512 * 1024,
+    512 * 1024,
+    128 * 1024,
+    2 * 1024 * 1024,
+    1024 * 1024,
+];
+
 #[test]
 fn released_binary_lists_and_serves_synthetic_image() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("serve lifecycle with spaces")?;
@@ -58,6 +66,59 @@ fn released_binary_lists_and_serves_synthetic_image() -> Result<(), Box<dyn std:
     let _ = server.wait();
     fs::remove_dir_all(directory)?;
     result
+}
+
+#[test]
+fn committed_empty_disks_fixture_is_current() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = temporary_directory("empty-disks-fixture")?;
+    let generated = directory.join("empty-disks.rdr");
+    write_empty_disks_image(&generated)?;
+
+    let tracked = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-disks.rdr");
+    assert_eq!(fs::read(&generated)?, fs::read(&tracked)?);
+
+    let list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
+        .arg("list")
+        .arg(&tracked)
+        .output()?;
+    assert!(
+        list.status.success(),
+        "{}",
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_output = String::from_utf8(list.stdout)?;
+    for (object, logical_size) in EMPTY_DISK_SIZES.iter().copied().enumerate() {
+        assert!(
+            list_output.contains(&format!("object={object} ")),
+            "{list_output}"
+        );
+
+        let extracted = directory.join(format!("object-{object}.raw"));
+        let extraction = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
+            .arg("extract")
+            .arg(&tracked)
+            .args(["--object", &object.to_string(), "--output"])
+            .arg(&extracted)
+            .output()?;
+        assert!(
+            extraction.status.success(),
+            "{}",
+            String::from_utf8_lossy(&extraction.stderr)
+        );
+        let bytes = fs::read(&extracted)?;
+        assert_eq!(bytes.len() as u64, logical_size);
+        assert!(bytes.iter().all(|byte| *byte == 0));
+    }
+
+    fs::remove_dir_all(directory)?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "regenerates the tracked synthetic fixture"]
+fn regenerate_empty_disks_fixture() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-disks.rdr");
+    write_empty_disks_image(&path)
 }
 
 #[test]
@@ -369,6 +430,80 @@ fn write_synthetic_image(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     file.seek(SeekFrom::Start(pointer_offset))?;
     file.write_all(&pointer)?;
     file.sync_all()?;
+    Ok(())
+}
+
+fn write_empty_disks_image(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use flate2::write::ZlibEncoder;
+    use flate2::Compression;
+
+    const ZLIB_DATA_FLAGS: u32 = 0x1804_0220;
+
+    let mut image = vec![0_u8; FILE_HEADER_SIZE as usize];
+    let mut indexes = Vec::with_capacity(EMPTY_DISK_SIZES.len());
+
+    for (object, logical_size) in EMPTY_DISK_SIZES.iter().copied().enumerate() {
+        let data_offset = image.len() as u64;
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&vec![0_u8; logical_size as usize])?;
+        let compressed = encoder.finish()?;
+        let data_length = 40_u32 + compressed.len() as u32;
+
+        let mut data = vec![0_u8; 40];
+        data[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        data[4..8].copy_from_slice(&data_length.to_le_bytes());
+        data[8..12].copy_from_slice(&ZLIB_DATA_FLAGS.to_le_bytes());
+        data[12..16].copy_from_slice(&(logical_size as u32).to_le_bytes());
+        data[24..32].copy_from_slice(&0_u64.to_le_bytes());
+        data[32..36].copy_from_slice(&(logical_size as u32).to_le_bytes());
+        data.extend_from_slice(&compressed);
+        image.extend_from_slice(&data);
+
+        let index_offset = image.len() as u64;
+        let index_length = 60_u32;
+        let mut index = vec![0_u8; index_length as usize];
+        index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        index[4..8].copy_from_slice(&index_length.to_le_bytes());
+        index[8..12].copy_from_slice(&RAW_CHUNK_INDEX_FLAGS.to_le_bytes());
+        index[12..16].copy_from_slice(&(object as u32).to_le_bytes());
+        index[20..28].copy_from_slice(&logical_size.to_le_bytes());
+        index[36..44].copy_from_slice(&logical_size.to_le_bytes());
+        index[44..48].copy_from_slice(&1_u32.to_le_bytes());
+        index[48..56].copy_from_slice(&(data_offset - FILE_HEADER_SIZE).to_le_bytes());
+        index[56..60].copy_from_slice(&data_length.to_le_bytes());
+        image.extend_from_slice(&index);
+        indexes.push((object as u32, index_offset, index_length));
+    }
+
+    let directory_offset = image.len() as u64;
+    let directory_length = 12_u32 + indexes.len() as u32 * 20;
+    let mut directory = vec![0_u8; directory_length as usize];
+    directory[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+    directory[4..8].copy_from_slice(&directory_length.to_le_bytes());
+    directory[8..12].copy_from_slice(&ARCHIVE_DIRECTORY_FLAGS.to_le_bytes());
+    for (entry, (object, index_offset, index_length)) in indexes.iter().enumerate() {
+        let start = 12 + entry * 20;
+        directory[start..start + 8]
+            .copy_from_slice(&(index_offset - FILE_HEADER_SIZE).to_le_bytes());
+        directory[start + 8..start + 12].copy_from_slice(&index_length.to_le_bytes());
+        directory[start + 12..start + 16].copy_from_slice(&object.to_le_bytes());
+        directory[start + 16..start + 20].copy_from_slice(&0x90_u32.to_le_bytes());
+    }
+    image.extend_from_slice(&directory);
+
+    let mut pointer = [0_u8; 24];
+    pointer[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+    pointer[4..8].copy_from_slice(&24_u32.to_le_bytes());
+    pointer[8..12].copy_from_slice(&DIRECTORY_POINTER_FLAGS.to_le_bytes());
+    pointer[12..20].copy_from_slice(&(directory_offset - FILE_HEADER_SIZE).to_le_bytes());
+    pointer[20..24].copy_from_slice(&directory_length.to_le_bytes());
+    image.extend_from_slice(&pointer);
+
+    let file_size = image.len() as u64;
+    image[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+    image[4..8].copy_from_slice(&(FILE_HEADER_SIZE as u32).to_le_bytes());
+    image[44..52].copy_from_slice(&file_size.to_le_bytes());
+    fs::write(path, image)?;
     Ok(())
 }
 
