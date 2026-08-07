@@ -18,3 +18,12 @@ import Testing
     #expect(value.sessions[0].id == "session-3")
     #expect(value.sessions[0].volumes[0].mountPoint == "/Volumes/Data")
 }
+
+@Test func matchesSessionToItsImageAndObject() throws {
+    let data = Data(#"{"session_id":"session-3","state":"active","image":"/Volumes/Backups/disk.rdr","object":3,"device":"/dev/disk9","volumes":[]}"#.utf8)
+    let session = try JSONDecoder().decode(MountSession.self, from: data)
+
+    #expect(session.matches(imageURL: URL(fileURLWithPath: "/Volumes/Backups/disk.rdr"), objectID: 3))
+    #expect(!session.matches(imageURL: URL(fileURLWithPath: "/Volumes/Backups/other.rdr"), objectID: 3))
+    #expect(!session.matches(imageURL: URL(fileURLWithPath: "/Volumes/Backups/disk.rdr"), objectID: 2))
+}

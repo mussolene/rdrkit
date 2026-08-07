@@ -78,6 +78,11 @@ public struct MountSession: Codable, Identifiable, Sendable {
         case device
         case volumes
     }
+
+    public func matches(imageURL: URL, objectID: UInt32) -> Bool {
+        object == objectID
+            && URL(fileURLWithPath: image).standardizedFileURL == imageURL.standardizedFileURL
+    }
 }
 
 public struct StatusResult: Codable, Sendable {

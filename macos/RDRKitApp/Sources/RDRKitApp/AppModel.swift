@@ -21,6 +21,29 @@ final class AppModel: ObservableObject {
 
     private init() {}
 
+    var currentImageSessions: [MountSession] {
+        guard let imageURL else { return [] }
+        return sessions.filter { session in
+            session.matches(imageURL: imageURL, objectID: session.object)
+        }
+    }
+
+    var otherImageSessions: [MountSession] {
+        guard let imageURL else { return sessions }
+        return sessions.filter { session in
+            !session.matches(imageURL: imageURL, objectID: session.object)
+        }
+    }
+
+    var selectedObjectSession: MountSession? {
+        guard let selectedObjectID else { return nil }
+        return session(for: selectedObjectID)
+    }
+
+    var unmountedObjects: [RDRObject] {
+        imageDescription?.objects.filter { session(for: $0.id) == nil } ?? []
+    }
+
     func chooseImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.rdrImage]
@@ -39,16 +62,27 @@ final class AppModel: ObservableObject {
             return
         }
 
+        await waitUntilIdle()
+
+        if imageURL?.standardizedFileURL == url.standardizedFileURL,
+           imageDescription != nil {
+            await refreshStatus(waitUntilAvailable: true)
+            return
+        }
+
         await perform("Reading image") { cli in
             let description = try await cli.list(image: url)
             imageURL = url
             imageDescription = description
             selectedObjectID = description.objects.max(by: { $0.logicalSize < $1.logicalSize })?.id
+            try await loadSessions(using: cli)
 
             if description.objects.count == 1, let object = description.objects.first {
-                statusMessage = "Mounting the only disk object"
-                _ = try await cli.mount(image: url, object: object.id)
-                try await loadSessions(using: cli)
+                if session(for: object.id) == nil {
+                    statusMessage = "Mounting the only disk object"
+                    _ = try await cli.mount(image: url, object: object.id)
+                    try await loadSessions(using: cli)
+                }
             } else if description.objects.isEmpty {
                 statusMessage = "The image contains no disk objects"
             } else {
@@ -59,31 +93,41 @@ final class AppModel: ObservableObject {
 
     func mountSelected() async {
         guard let imageURL, let selectedObjectID else { return }
-        await perform("Mounting disk object (selectedObjectID)") { cli in
+        guard session(for: selectedObjectID) == nil else { return }
+        await perform("Mounting disk object \(selectedObjectID)") { cli in
             _ = try await cli.mount(image: imageURL, object: selectedObjectID)
             try await loadSessions(using: cli)
         }
     }
 
     func mountAll() async {
-        guard let imageURL, let objects = imageDescription?.objects, !objects.isEmpty else { return }
+        guard let imageURL, !unmountedObjects.isEmpty else { return }
+        let objects = unmountedObjects
         await perform("Mounting all disk objects") { cli in
-            for object in objects {
-                statusMessage = "Mounting disk object (object.id)"
-                _ = try await cli.mount(image: imageURL, object: object.id)
+            do {
+                for object in objects {
+                    statusMessage = "Mounting disk object \(object.id)"
+                    _ = try await cli.mount(image: imageURL, object: object.id)
+                }
+                try await loadSessions(using: cli)
+            } catch {
+                try? await loadSessions(using: cli)
+                throw error
             }
-            try await loadSessions(using: cli)
         }
     }
 
-    func refreshStatus() async {
+    func refreshStatus(waitUntilAvailable: Bool = false) async {
+        if waitUntilAvailable {
+            await waitUntilIdle()
+        }
         await perform("Refreshing mounted disks") { cli in
             try await loadSessions(using: cli)
         }
     }
 
     func unmount(_ session: MountSession) async {
-        await perform("Unmounting disk object (session.object)") { cli in
+        await perform("Unmounting disk object \(session.object)") { cli in
             _ = try await cli.unmount(sessionID: session.sessionID)
             try await loadSessions(using: cli)
         }
@@ -91,6 +135,19 @@ final class AppModel: ObservableObject {
 
     func openInFinder(_ volume: MountedVolume) {
         NSWorkspace.shared.open(URL(fileURLWithPath: volume.mountPoint, isDirectory: true))
+    }
+
+    func session(for objectID: UInt32) -> MountSession? {
+        guard let imageURL else { return nil }
+        return sessions.first { session in
+            session.matches(imageURL: imageURL, objectID: objectID)
+        }
+    }
+
+    private func waitUntilIdle() async {
+        while isBusy {
+            try? await Task.sleep(for: .milliseconds(25))
+        }
     }
 
     private func perform(

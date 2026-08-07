@@ -23,6 +23,9 @@ struct ContentView: View {
         }
         .frame(minWidth: 720, minHeight: 520)
         .task { await model.refreshStatus() }
+        .onOpenURL { url in
+            Task { await model.openImage(url) }
+        }
         .alert(
             "RDRKit could not complete the operation",
             isPresented: Binding(
@@ -82,6 +85,22 @@ struct ContentView: View {
         if let image = model.imageDescription, let imageURL = model.imageURL {
             VStack(alignment: .leading, spacing: 12) {
                 sectionTitle("Disk image", detail: imageURL.lastPathComponent)
+                HStack(alignment: .top, spacing: 8) {
+                    Text("Source")
+                        .foregroundStyle(.secondary)
+                    Text(imageURL.path)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Text("\(model.currentImageSessions.count) of \(image.objects.count) mounted")
+                        .foregroundStyle(
+                            model.currentImageSessions.isEmpty
+                                ? Color(nsColor: .secondaryLabelColor)
+                                : Color.green
+                        )
+                }
+                .font(.caption)
                 VStack(spacing: 0) {
                     ForEach(image.objects) { object in
                         objectRow(object)
@@ -95,12 +114,16 @@ struct ContentView: View {
                         Task { await model.mountSelected() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(model.selectedObjectID == nil || model.isBusy)
+                    .disabled(
+                        model.selectedObjectID == nil
+                            || model.selectedObjectSession != nil
+                            || model.isBusy
+                    )
 
-                    Button("Mount All Objects") {
+                    Button(model.currentImageSessions.isEmpty ? "Mount All Objects" : "Mount Remaining Objects") {
                         Task { await model.mountAll() }
                     }
-                    .disabled(image.objects.isEmpty || model.isBusy)
+                    .disabled(model.unmountedObjects.isEmpty || model.isBusy)
 
                     Spacer()
                     Text("Image size: \(ByteCount.format(image.physicalSize))")
@@ -124,18 +147,27 @@ struct ContentView: View {
     }
 
     private func objectRow(_ object: RDRObject) -> some View {
-        Button {
+        let session = model.session(for: object.id)
+        return Button {
             model.selectedObjectID = object.id
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: model.selectedObjectID == object.id ? "checkmark.circle.fill" : "circle")
                     .foregroundStyle(model.selectedObjectID == object.id ? Color.accentColor : .secondary)
-                Image(systemName: "internaldrive")
+                Image(systemName: session == nil ? "internaldrive" : "externaldrive.fill.badge.checkmark")
                     .font(.title3)
+                    .foregroundStyle(session == nil ? Color.primary : .green)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Disk object \(object.id)")
-                        .fontWeight(.medium)
-                    Text("\(object.chunks) chunks, \(ByteCount.format(UInt64(object.chunkSize))) each")
+                    HStack(spacing: 7) {
+                        Text("Disk object \(object.id)")
+                            .fontWeight(.medium)
+                        if session != nil {
+                            Text("MOUNTED")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    Text(objectDetail(object, session: session))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -151,30 +183,45 @@ struct ContentView: View {
 
     private var sessionsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Mounted disks", detail: model.sessions.isEmpty ? "None" : "\(model.sessions.count)")
+            sectionTitle("Mounted RDR disks", detail: model.sessions.isEmpty ? "None" : "\(model.sessions.count) sessions")
             if model.sessions.isEmpty {
                 Text("No RDR disk objects are mounted.")
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 8)
             } else {
-                ForEach(model.sessions) { session in
-                    sessionCard(session)
+                if !model.currentImageSessions.isEmpty {
+                    Text("FROM THIS IMAGE")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    ForEach(model.currentImageSessions) { session in
+                        sessionCard(session, belongsToCurrentImage: true)
+                    }
+                }
+                if !model.otherImageSessions.isEmpty {
+                    Text(model.imageURL == nil ? "ALL IMAGES" : "FROM OTHER IMAGES")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.secondary)
+                    ForEach(model.otherImageSessions) { session in
+                        sessionCard(session, belongsToCurrentImage: false)
+                    }
                 }
             }
         }
     }
 
-    private func sessionCard(_ session: MountSession) -> some View {
+    private func sessionCard(_ session: MountSession, belongsToCurrentImage: Bool) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "externaldrive.fill.badge.checkmark")
                     .foregroundStyle(.green)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(URL(fileURLWithPath: session.image).lastPathComponent), object \(session.object)")
+                    Text("Disk object \(session.object) from \(URL(fileURLWithPath: session.image).lastPathComponent)")
                         .fontWeight(.medium)
-                    Text(session.device ?? session.state)
-                        .font(.caption.monospaced())
+                    Text(session.image)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                 }
                 Spacer()
                 Button("Unmount", role: .destructive) {
@@ -182,10 +229,20 @@ struct ContentView: View {
                 }
                 .disabled(model.isBusy)
             }
+            LabeledContent("Device", value: session.device ?? "Not attached")
+                .font(.caption.monospaced())
+            LabeledContent("Session", value: session.sessionID)
+                .font(.caption.monospaced())
             ForEach(session.volumes, id: \.self) { volume in
                 HStack {
                     Image(systemName: "folder")
-                    Text(volume.mountPoint)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(URL(fileURLWithPath: volume.mountPoint).lastPathComponent)
+                            .fontWeight(.medium)
+                        Text(volume.mountPoint)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer()
@@ -195,7 +252,19 @@ struct ContentView: View {
             }
         }
         .padding(14)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            belongsToCurrentImage ? Color.accentColor.opacity(0.08) : Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+    }
+
+    private func objectDetail(_ object: RDRObject, session: MountSession?) -> String {
+        guard let session else {
+            return "Not mounted, \(object.chunks) chunks"
+        }
+        let locations = session.volumes.map(\.mountPoint)
+        let destination = locations.isEmpty ? (session.device ?? session.state) : locations.joined(separator: ", ")
+        return "\(session.device ?? session.state) at \(destination)"
     }
 
     private func sectionTitle(_ title: String, detail: String) -> some View {

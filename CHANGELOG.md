@@ -13,6 +13,13 @@ All notable changes are documented here. The project follows
   selection, mount-all operation, session status, Finder access, and unmount.
 - Reproducible macOS application bundle assembly with local code signing.
 
+### Fixed
+
+- Preserve Finder open requests during startup status refresh so a double-clicked
+  image is displayed without another file selection.
+- Show the source image, mounted object count, attached device, volume path, and
+  whether each object belongs to the currently open image.
+
 ## [0.2.0-rc.1] - 2026-08-07
 
 ### Added
