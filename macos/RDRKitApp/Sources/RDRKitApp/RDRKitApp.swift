@@ -21,7 +21,7 @@ struct RDRKitApplication: App {
     @StateObject private var model = AppModel.shared
 
     var body: some Scene {
-        WindowGroup {
+        Window("RDRKit", id: "main") {
             ContentView(model: model)
         }
         .commands {
