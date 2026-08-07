@@ -223,6 +223,8 @@ fn select_object(objects: &[ObjectInfo], requested: Option<u32>) -> Result<Objec
 }
 
 fn spawn_server(image: &Path, object: u32, ready_file: &Path, log_path: &Path) -> Result<Child> {
+    use std::os::unix::process::CommandExt;
+
     let executable = std::env::current_exe().context("locate rdrkit executable")?;
     let log = OpenOptions::new()
         .create(true)
@@ -244,6 +246,7 @@ fn spawn_server(image: &Path, object: u32, ready_file: &Path, log_path: &Path) -
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(stderr))
+        .process_group(0)
         .spawn()
         .context("start rdrkit NFS server")
 }
