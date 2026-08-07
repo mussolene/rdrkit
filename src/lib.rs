@@ -29,7 +29,7 @@ const DIRECTORY_POINTER_FLAGS: u32 = 0x0000_0003;
     version,
     about = "Read indexed R-Drive Image (.rdr) objects without modifying the source",
     long_about = "rdrkit exposes objects stored in indexed R-Drive Image (.rdr) archives as read-only raw byte streams. It reads the archive footer and compact chunk indexes directly, then inflates only requested chunks.",
-    after_help = "Start with `rdrkit list IMAGE.rdr`, then use `rdrkit serve IMAGE.rdr --object N`. See README.md for the platform mount commands."
+    after_help = "Use `rdrkit mount IMAGE.rdr` for the normal read-only workflow. The `list` and `serve` commands remain available for inspection and manual orchestration."
 )]
 struct Cli {
     #[command(subcommand)]

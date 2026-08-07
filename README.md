@@ -47,7 +47,7 @@ Download the archive for your platform from
 `SHA256SUMS`, then install the binary:
 
 ```sh
-tar -xzf rdrkit-v0.1.0-<target>.tar.gz
+tar -xzf rdrkit-v0.2.0-<target>.tar.gz
 chmod +x rdrkit
 sudo install -m 0755 rdrkit /usr/local/bin/rdrkit
 ```
@@ -61,7 +61,39 @@ cargo build --release --locked
 sudo install -m 0755 target/release/rdrkit /usr/local/bin/rdrkit
 ```
 
-### 2. List objects
+### 2. Mount an image
+
+```sh
+rdrkit mount backup.rdr
+```
+
+If the image contains one indexed object, `rdrkit` selects it automatically. If
+there are several objects in an interactive terminal, it shows their identifiers
+and sizes and asks which one to attach. Scripts must select one explicitly:
+
+```sh
+rdrkit mount backup.rdr --object 3
+```
+
+The command starts an NFS server on an available localhost port, attaches the
+virtual raw disk read-only, and mounts filesystems recognized by the host. It
+prints a session id, attached device, and resulting mount points.
+
+On Linux the command invokes `sudo` for NFS, loop-device, and filesystem mount
+operations. The `rdrkit` server itself remains an unprivileged process.
+
+### 3. Inspect and unmount
+
+```sh
+rdrkit status
+rdrkit unmount backup.rdr
+```
+
+You can also unmount by the session id printed by `mount`. Unmounting detaches
+the filesystems and raw device, unmounts the localhost NFS export, stops the
+matching `rdrkit serve` process, and removes the session state.
+
+### List objects without mounting
 
 This reads the embedded archive directory and compact indexes; it does not scan
 the complete image:
@@ -80,7 +112,7 @@ object=2 size=128.00 MiB chunks=512 chunk_size=256.00 KiB
 object=3 size=929.31 GiB chunks=3806464 chunk_size=256.00 KiB
 ```
 
-### 3. Serve an object
+### Serve an object manually
 
 Keep this process running while the volume is attached:
 
@@ -90,7 +122,7 @@ rdrkit serve backup.rdr --object 3 --listen 127.0.0.1:11111
 
 The NFS export contains one read-only virtual file named `object-3.raw`.
 
-## Mount on macOS
+## Manual mount on macOS
 
 In a second terminal:
 
@@ -108,23 +140,23 @@ hdiutil attach \
   "$HOME/Library/Caches/rdrkit/object-3/object-3.raw"
 ```
 
-`hdiutil` prints a device such as `/dev/disk7`. Mount it read-only:
+`hdiutil` prints a device such as `/dev/disk7`. The device itself is already
+read-only. Mount all filesystems recognized on its partition map:
 
 ```sh
-diskutil mount readOnly /dev/disk7
+diskutil mountDisk /dev/disk7
 ```
 
 Detach in reverse order before stopping `rdrkit`:
 
 ```sh
-diskutil unmount /dev/disk7
 hdiutil detach /dev/disk7
 umount "$HOME/Library/Caches/rdrkit/object-3"
 ```
 
 No third-party macOS kernel extension is required.
 
-## Mount on Linux
+## Manual mount on Linux
 
 Linux requires the NFS client, loop-device support, and filesystem support for
 the contained volume. Package names vary by distribution.
@@ -136,9 +168,13 @@ sudo mount -t nfs \
   -o ro,nolock,vers=3,tcp,port=11111,mountport=11111 \
   127.0.0.1:/ /mnt/rdrkit-nfs
 
-LOOP_DEVICE=$(sudo losetup --find --show --read-only /mnt/rdrkit-nfs/object-3.raw)
-sudo mount -o ro "$LOOP_DEVICE" /mnt/rdr-volume
+LOOP_DEVICE=$(sudo losetup --find --show --read-only --partscan /mnt/rdrkit-nfs/object-3.raw)
+lsblk --fs "$LOOP_DEVICE"
+sudo mount -o ro "${LOOP_DEVICE}p1" /mnt/rdr-volume
 ```
+
+Use the filesystem-bearing path printed by `lsblk`. For an image without a
+partition table this can be the loop device itself instead of `${LOOP_DEVICE}p1`.
 
 Unmount before stopping `rdrkit`:
 
@@ -156,6 +192,15 @@ for example `sudo mount -t ntfs3 -o ro ...`.
 ```text
 rdrkit list IMAGE.rdr
     List indexed objects quickly.
+
+rdrkit mount IMAGE.rdr [--object N]
+    Attach an object and mount recognized filesystems read-only.
+
+rdrkit status
+    Show active and stale managed mount sessions.
+
+rdrkit unmount SESSION_OR_IMAGE
+    Tear down a managed mount session in reverse order.
 
 rdrkit serve IMAGE.rdr --object N [--listen 127.0.0.1:11111]
     Export one object as a seekable read-only raw file over NFSv3.
@@ -205,7 +250,7 @@ record layouts, and the exact reader-selection logic.
 
 - Read-only operation only.
 - Encrypted, incremental, split, and unknown RDR variants are not supported.
-- The current frontend serves one object per process.
+- Each managed session attaches one indexed object.
 - Linux loop mounting requires host privileges and compatible filesystem tools.
 - `inspect` and `extract` are diagnostic paths; `serve` uses the embedded index.
 

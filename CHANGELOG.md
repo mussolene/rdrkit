@@ -6,9 +6,26 @@ All notable changes are documented here. The project follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-07
+
+### Added
+
+- One-command read-only mount orchestration on macOS and Linux.
+- Managed mount sessions with `mount`, `unmount`, and `status` commands.
+- Interactive object selection when an image contains several indexed objects.
+- Dynamic localhost NFS ports and readiness handshakes.
+- Public image and object metadata types for future frontends.
+- End-to-end synthetic coverage of the released NFS server lifecycle.
+
+### Changed
+
+- Split the executable entrypoint from the reusable Rust library.
+- Made managed macOS mounts discover and mount volumes from a read-only attached disk.
+- Made managed Linux mounts discover filesystems through read-only loop devices with partition scanning.
+
 ### Planned
 
-- One-command mount and unmount orchestration.
+- Lightweight macOS application and `.rdr` file association.
 - Additional RDR variants and integrity metadata.
 
 ## [0.1.0] - 2026-07-14
@@ -22,5 +39,6 @@ All notable changes are documented here. The project follows
 - macOS and Linux operating instructions.
 - CI, release binaries, dependency auditing, license checks, and secret scans.
 
-[Unreleased]: https://github.com/mussolene/rdrkit/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mussolene/rdrkit/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mussolene/rdrkit/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mussolene/rdrkit/releases/tag/v0.1.0
