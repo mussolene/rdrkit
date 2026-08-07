@@ -1,6 +1,10 @@
 # Rust build output
 /target/
 
+# Swift Package Manager build output
+/.build/
+**/.build/
+
 # Local disk images and generated block-device views
 *.rdr
 !tests/fixtures/empty-disk-zlib.rdr
