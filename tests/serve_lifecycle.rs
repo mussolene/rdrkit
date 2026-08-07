@@ -12,14 +12,10 @@ const RAW_DATA_FLAGS: u32 = 0x1800_0020;
 const RAW_CHUNK_INDEX_FLAGS: u32 = 0x0800_0090;
 const ARCHIVE_DIRECTORY_FLAGS: u32 = 0x0000_0008;
 const DIRECTORY_POINTER_FLAGS: u32 = 0x0000_0003;
-
-const EMPTY_DISK_SIZES: [u64; 5] = [
-    512 * 1024,
-    512 * 1024,
-    128 * 1024,
-    2 * 1024 * 1024,
-    1024 * 1024,
-];
+const EMPTY_DISK_SIZE: u64 = 1024 * 1024;
+const EMPTY_DISK_CHUNK_SIZE: u64 = 256 * 1024;
+const EMPTY_DISK_FIXTURES: [(&str, bool); 2] =
+    [("empty-disk-zlib.rdr", true), ("empty-disk-raw.rdr", false)];
 
 #[test]
 fn released_binary_lists_and_serves_synthetic_image() -> Result<(), Box<dyn std::error::Error>> {
@@ -69,35 +65,37 @@ fn released_binary_lists_and_serves_synthetic_image() -> Result<(), Box<dyn std:
 }
 
 #[test]
-fn committed_empty_disks_fixture_is_current() -> Result<(), Box<dyn std::error::Error>> {
+fn committed_empty_disk_fixtures_are_current() -> Result<(), Box<dyn std::error::Error>> {
     let directory = temporary_directory("empty-disks-fixture")?;
-    let generated = directory.join("empty-disks.rdr");
-    write_empty_disks_image(&generated)?;
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
 
-    let tracked = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-disks.rdr");
-    assert_eq!(fs::read(&generated)?, fs::read(&tracked)?);
+    for (name, compressed) in EMPTY_DISK_FIXTURES {
+        let generated = directory.join(name);
+        let tracked = fixtures.join(name);
+        write_empty_disk_image(&generated, compressed)?;
+        assert_eq!(fs::read(&generated)?, fs::read(&tracked)?);
 
-    let list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
-        .arg("list")
-        .arg(&tracked)
-        .output()?;
-    assert!(
-        list.status.success(),
-        "{}",
-        String::from_utf8_lossy(&list.stderr)
-    );
-    let list_output = String::from_utf8(list.stdout)?;
-    for (object, logical_size) in EMPTY_DISK_SIZES.iter().copied().enumerate() {
+        let list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
+            .arg("list")
+            .arg(&tracked)
+            .output()?;
         assert!(
-            list_output.contains(&format!("object={object} ")),
+            list.status.success(),
+            "{}",
+            String::from_utf8_lossy(&list.stderr)
+        );
+        let list_output = String::from_utf8(list.stdout)?;
+        assert!(
+            list_output.contains("object=0 size=1.00 MiB chunks=4 chunk_size=256.00 KiB"),
             "{list_output}"
         );
+        assert!(!list_output.contains("object=1 "), "{list_output}");
 
-        let extracted = directory.join(format!("object-{object}.raw"));
+        let extracted = directory.join(format!("{name}.raw"));
         let extraction = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
             .arg("extract")
             .arg(&tracked)
-            .args(["--object", &object.to_string(), "--output"])
+            .args(["--object", "0", "--output"])
             .arg(&extracted)
             .output()?;
         assert!(
@@ -106,8 +104,26 @@ fn committed_empty_disks_fixture_is_current() -> Result<(), Box<dyn std::error::
             String::from_utf8_lossy(&extraction.stderr)
         );
         let bytes = fs::read(&extracted)?;
-        assert_eq!(bytes.len() as u64, logical_size);
+        assert_eq!(bytes.len() as u64, EMPTY_DISK_SIZE);
         assert!(bytes.iter().all(|byte| *byte == 0));
+
+        let inspect = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
+            .arg("inspect")
+            .arg(&tracked)
+            .output()?;
+        assert!(inspect.status.success());
+        let inspect_output = String::from_utf8(inspect.stdout)?;
+        let expected_encoding = if compressed {
+            "records=4 raw=0 zlib=4"
+        } else {
+            "records=4 raw=4 zlib=0"
+        };
+        assert!(
+            inspect_output.contains("object=0 status=")
+                && inspect_output.contains("logical=1.00 MiB stored=")
+                && inspect_output.contains(expected_encoding),
+            "{inspect_output}"
+        );
     }
 
     fs::remove_dir_all(directory)?;
@@ -117,8 +133,11 @@ fn committed_empty_disks_fixture_is_current() -> Result<(), Box<dyn std::error::
 #[test]
 #[ignore = "regenerates the tracked synthetic fixture"]
 fn regenerate_empty_disks_fixture() -> Result<(), Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/empty-disks.rdr");
-    write_empty_disks_image(&path)
+    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    for (name, compressed) in EMPTY_DISK_FIXTURES {
+        write_empty_disk_image(&directory.join(name), compressed)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -433,62 +452,77 @@ fn write_synthetic_image(path: &Path) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-fn write_empty_disks_image(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn write_empty_disk_image(path: &Path, compressed: bool) -> Result<(), Box<dyn std::error::Error>> {
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
 
     const ZLIB_DATA_FLAGS: u32 = 0x1804_0220;
 
     let mut image = vec![0_u8; FILE_HEADER_SIZE as usize];
-    let mut indexes = Vec::with_capacity(EMPTY_DISK_SIZES.len());
+    let logical_size = EMPTY_DISK_SIZE;
+    let chunk_count = logical_size.div_ceil(EMPTY_DISK_CHUNK_SIZE) as u32;
+    let mut chunks = Vec::with_capacity(chunk_count as usize);
 
-    for (object, logical_size) in EMPTY_DISK_SIZES.iter().copied().enumerate() {
+    for chunk in 0..chunk_count {
+        let logical_offset = u64::from(chunk) * EMPTY_DISK_CHUNK_SIZE;
+        let logical_length = (logical_size - logical_offset).min(EMPTY_DISK_CHUNK_SIZE) as u32;
         let data_offset = image.len() as u64;
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
-        encoder.write_all(&vec![0_u8; logical_size as usize])?;
-        let compressed = encoder.finish()?;
-        let data_length = 40_u32 + compressed.len() as u32;
 
-        let mut data = vec![0_u8; 40];
-        data[0..4].copy_from_slice(&MAGIC.to_le_bytes());
-        data[4..8].copy_from_slice(&data_length.to_le_bytes());
-        data[8..12].copy_from_slice(&ZLIB_DATA_FLAGS.to_le_bytes());
-        data[12..16].copy_from_slice(&(logical_size as u32).to_le_bytes());
-        data[24..32].copy_from_slice(&0_u64.to_le_bytes());
-        data[32..36].copy_from_slice(&(logical_size as u32).to_le_bytes());
-        data.extend_from_slice(&compressed);
-        image.extend_from_slice(&data);
-
-        let index_offset = image.len() as u64;
-        let index_length = 60_u32;
-        let mut index = vec![0_u8; index_length as usize];
-        index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
-        index[4..8].copy_from_slice(&index_length.to_le_bytes());
-        index[8..12].copy_from_slice(&RAW_CHUNK_INDEX_FLAGS.to_le_bytes());
-        index[12..16].copy_from_slice(&(object as u32).to_le_bytes());
-        index[20..28].copy_from_slice(&logical_size.to_le_bytes());
-        index[36..44].copy_from_slice(&logical_size.to_le_bytes());
-        index[44..48].copy_from_slice(&1_u32.to_le_bytes());
-        index[48..56].copy_from_slice(&(data_offset - FILE_HEADER_SIZE).to_le_bytes());
-        index[56..60].copy_from_slice(&data_length.to_le_bytes());
-        image.extend_from_slice(&index);
-        indexes.push((object as u32, index_offset, index_length));
+        if compressed {
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+            encoder.write_all(&vec![0_u8; logical_length as usize])?;
+            let payload = encoder.finish()?;
+            let data_length = 40_u32 + payload.len() as u32;
+            let mut data = vec![0_u8; 40];
+            data[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+            data[4..8].copy_from_slice(&data_length.to_le_bytes());
+            data[8..12].copy_from_slice(&ZLIB_DATA_FLAGS.to_le_bytes());
+            data[12..16].copy_from_slice(&logical_length.to_le_bytes());
+            data[24..32].copy_from_slice(&logical_offset.to_le_bytes());
+            data[32..36].copy_from_slice(&logical_length.to_le_bytes());
+            data.extend_from_slice(&payload);
+            image.extend_from_slice(&data);
+            chunks.push((data_offset, data_length));
+        } else {
+            let data_length = 36_u32 + logical_length;
+            let mut data = vec![0_u8; data_length as usize];
+            data[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+            data[4..8].copy_from_slice(&data_length.to_le_bytes());
+            data[8..12].copy_from_slice(&RAW_DATA_FLAGS.to_le_bytes());
+            data[20..28].copy_from_slice(&logical_offset.to_le_bytes());
+            data[28..32].copy_from_slice(&logical_length.to_le_bytes());
+            image.extend_from_slice(&data);
+            chunks.push((data_offset, data_length));
+        }
     }
 
+    let index_offset = image.len() as u64;
+    let index_length = 48_u32 + chunk_count * 12;
+    let mut index = vec![0_u8; index_length as usize];
+    index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+    index[4..8].copy_from_slice(&index_length.to_le_bytes());
+    index[8..12].copy_from_slice(&RAW_CHUNK_INDEX_FLAGS.to_le_bytes());
+    index[12..16].copy_from_slice(&0_u32.to_le_bytes());
+    index[20..28].copy_from_slice(&logical_size.to_le_bytes());
+    index[36..44].copy_from_slice(&EMPTY_DISK_CHUNK_SIZE.to_le_bytes());
+    index[44..48].copy_from_slice(&chunk_count.to_le_bytes());
+    for (entry, (data_offset, data_length)) in chunks.iter().enumerate() {
+        let start = 48 + entry * 12;
+        index[start..start + 8].copy_from_slice(&(data_offset - FILE_HEADER_SIZE).to_le_bytes());
+        index[start + 8..start + 12].copy_from_slice(&data_length.to_le_bytes());
+    }
+    image.extend_from_slice(&index);
+
     let directory_offset = image.len() as u64;
-    let directory_length = 12_u32 + indexes.len() as u32 * 20;
+    let directory_length = 32_u32;
     let mut directory = vec![0_u8; directory_length as usize];
     directory[0..4].copy_from_slice(&MAGIC.to_le_bytes());
     directory[4..8].copy_from_slice(&directory_length.to_le_bytes());
     directory[8..12].copy_from_slice(&ARCHIVE_DIRECTORY_FLAGS.to_le_bytes());
-    for (entry, (object, index_offset, index_length)) in indexes.iter().enumerate() {
-        let start = 12 + entry * 20;
-        directory[start..start + 8]
-            .copy_from_slice(&(index_offset - FILE_HEADER_SIZE).to_le_bytes());
-        directory[start + 8..start + 12].copy_from_slice(&index_length.to_le_bytes());
-        directory[start + 12..start + 16].copy_from_slice(&object.to_le_bytes());
-        directory[start + 16..start + 20].copy_from_slice(&0x90_u32.to_le_bytes());
-    }
+    directory[12..20].copy_from_slice(&(index_offset - FILE_HEADER_SIZE).to_le_bytes());
+    directory[20..24].copy_from_slice(&index_length.to_le_bytes());
+    directory[24..28].copy_from_slice(&0_u32.to_le_bytes());
+    directory[28..32].copy_from_slice(&0x90_u32.to_le_bytes());
     image.extend_from_slice(&directory);
 
     let mut pointer = [0_u8; 24];

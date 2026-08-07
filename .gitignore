@@ -3,7 +3,8 @@
 
 # Local disk images and generated block-device views
 *.rdr
-!tests/fixtures/empty-disks.rdr
+!tests/fixtures/empty-disk-zlib.rdr
+!tests/fixtures/empty-disk-raw.rdr
 *.rdr.*
 *.rdridx
 *.raw

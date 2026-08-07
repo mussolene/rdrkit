@@ -14,9 +14,11 @@ No proprietary binaries, confidential disk images, extracted customer data,
 or reverse-engineered source code may be committed. Tests must use synthetic
 fixtures or independently redistributable data.
 
-`tests/fixtures/empty-disks.rdr` is a deterministic synthetic container with
-five zero-filled logical disks. It mirrors the multi-object shape used by real
-archives without containing a filesystem or user data. Regenerate it with:
+`tests/fixtures/empty-disk-zlib.rdr` and `empty-disk-raw.rdr` are deterministic
+synthetic containers. Each contains one zero-filled 1 MiB logical disk split
+into 256 KiB chunks. The first uses zlib-compressed data records and the second
+uses raw data records. Neither contains a filesystem or user data. Regenerate
+both with:
 
 ```sh
 cargo test regenerate_empty_disks_fixture -- --ignored
