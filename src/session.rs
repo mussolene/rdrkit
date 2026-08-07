@@ -231,7 +231,8 @@ fn spawn_server(image: &Path, object: u32, ready_file: &Path, log_path: &Path) -
         .open(log_path)
         .with_context(|| format!("create {}", log_path.display()))?;
     let stderr = log.try_clone()?;
-    Command::new(executable)
+    Command::new("nohup")
+        .arg(executable)
         .arg("serve")
         .arg(image)
         .arg("--object")
@@ -676,7 +677,10 @@ fn parse_macos_mounts(device: &str, output: &str) -> Vec<MountedVolume> {
         .filter_map(|line| {
             let (source, rest) = line.split_once(" on ")?;
             let suffix = source.strip_prefix(device)?;
-            if !suffix.starts_with('s') {
+            let is_slice = suffix.strip_prefix('s').is_some_and(|value| {
+                !value.is_empty() && value.chars().all(|item| item.is_ascii_digit())
+            });
+            if !suffix.is_empty() && !is_slice {
                 return None;
             }
             let mount_point = rest.split_once(" (").map_or(rest, |(path, _)| path);
@@ -726,12 +730,14 @@ mod tests {
         let output = concat!(
             "/dev/disk9s1 on /Volumes/Data (ntfs, local, read-only)\n",
             "/dev/disk90s1 on /Volumes/Other (apfs, local)\n",
-            "/dev/disk9 on /unexpected (unknown)\n"
+            "/dev/disk9 on /Volumes/Whole (ntfs, local, read-only)\n"
         );
         let volumes = parse_macos_mounts("/dev/disk9", output);
-        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes.len(), 2);
         assert_eq!(volumes[0].source, "/dev/disk9s1");
         assert_eq!(volumes[0].mount_point, Path::new("/Volumes/Data"));
+        assert_eq!(volumes[1].source, "/dev/disk9");
+        assert_eq!(volumes[1].mount_point, Path::new("/Volumes/Whole"));
     }
 
     #[test]
