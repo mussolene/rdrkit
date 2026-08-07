@@ -18,8 +18,8 @@ fixtures or independently redistributable data.
 synthetic containers. Each contains one zero-filled 1 MiB logical disk split
 into 256 KiB chunks. The first uses zlib-compressed data records and the second
 uses raw data records. Their compact chunk indexes use the matching zlib and
-raw encodings as well. Neither contains a filesystem or user data. Regenerate
-both with:
+raw encodings as well. The zlib streams use the observed `78 5e` compression
+profile. Neither contains a filesystem or user data. Regenerate both with:
 
 ```sh
 cargo test regenerate_empty_disks_fixture -- --ignored
