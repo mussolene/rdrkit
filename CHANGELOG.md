@@ -14,6 +14,7 @@ All notable changes are documented here. The project follows
 - Managed mount sessions with `mount`, `unmount`, and `status` commands.
 - Interactive object selection when an image contains several indexed objects.
 - Dynamic localhost NFS ports and readiness handshakes.
+- Recoverable session state for interrupted mount and unmount operations.
 - Public image and object metadata types for future frontends.
 - End-to-end synthetic coverage of the released NFS server lifecycle.
 
@@ -22,6 +23,7 @@ All notable changes are documented here. The project follows
 - Split the executable entrypoint from the reusable Rust library.
 - Made managed macOS mounts discover and mount volumes from a read-only attached disk.
 - Made managed Linux mounts discover filesystems through read-only loop devices with partition scanning.
+- Restricted session metadata to the current user and documented the host filesystem-parser threat model.
 
 ### Planned
 

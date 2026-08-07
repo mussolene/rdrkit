@@ -19,6 +19,9 @@ fixtures or independently redistributable data.
 - Open an issue before large format or public-API changes.
 - Keep source-image access read-only.
 - Add tests for parser changes and malformed input.
+- Add lifecycle tests for session-state changes and cleanup behavior.
+- Exercise platform-specific branches on their native host or in a matching
+  Linux container before requesting review.
 - Use focused commits following Conventional Commits, for example
   `fix(parser): reject truncated chunk index`.
 - Update `CHANGELOG.md` for user-visible behavior.
