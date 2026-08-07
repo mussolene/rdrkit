@@ -6,6 +6,10 @@ All notable changes are documented here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- Versioned JSON output for object discovery and managed mount-session commands.
+
 ## [0.2.0-rc.1] - 2026-08-07
 
 ### Added

@@ -208,16 +208,16 @@ for example `sudo mount -t ntfs3 -o ro ...`.
 ## Commands
 
 ```text
-rdrkit list IMAGE.rdr
+rdrkit list IMAGE.rdr [--json]
     List indexed objects quickly.
 
-rdrkit mount IMAGE.rdr [--object N]
+rdrkit mount IMAGE.rdr [--object N] [--json]
     Attach an object and mount recognized filesystems read-only.
 
-rdrkit status
+rdrkit status [--json]
     Show active and stale managed mount sessions.
 
-rdrkit unmount SESSION_OR_IMAGE
+rdrkit unmount SESSION_OR_IMAGE [--json]
     Tear down a managed mount session in reverse order.
 
 rdrkit serve IMAGE.rdr --object N [--listen 127.0.0.1:11111]
@@ -231,6 +231,13 @@ rdrkit inspect IMAGE.rdr [--max-records N]
 ```
 
 Run `rdrkit --help` or `rdrkit <command> --help` for current options.
+
+### Machine-readable interface
+
+`list`, `mount`, `status`, and `unmount` accept `--json`. Successful responses
+contain `schema_version: 1` and use byte counts rather than formatted sizes.
+Errors remain on standard error with a nonzero exit status. This interface is
+intended for the macOS application and other local frontends.
 
 ## How it works
 

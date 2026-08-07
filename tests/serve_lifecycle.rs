@@ -118,6 +118,18 @@ fn committed_empty_disk_fixtures_are_current() -> Result<(), Box<dyn std::error:
         );
         assert!(!list_output.contains("object=1 "), "{list_output}");
 
+        let json_list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
+            .arg("list")
+            .arg(&tracked)
+            .arg("--json")
+            .output()?;
+        assert!(json_list.status.success());
+        let json_list: serde_json::Value = serde_json::from_slice(&json_list.stdout)?;
+        assert_eq!(json_list["schema_version"], 1);
+        assert_eq!(json_list["physical_size"], tracked.metadata()?.len());
+        assert_eq!(json_list["objects"][0]["id"], 0);
+        assert_eq!(json_list["objects"][0]["logical_size"], EMPTY_DISK_SIZE);
+
         let extracted = directory.join(format!("{name}.raw"));
         let extraction = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
             .arg("extract")
@@ -219,6 +231,7 @@ fn managed_mount_status_and_unmount_are_recoverable() -> Result<(), Box<dyn std:
         image.to_str().ok_or("non-UTF-8 test path")?,
         "--object",
         "0",
+        "--json",
     ]);
     configure(&mut mount);
     let mounted = mount.output()?;
@@ -227,8 +240,14 @@ fn managed_mount_status_and_unmount_are_recoverable() -> Result<(), Box<dyn std:
         "{}",
         String::from_utf8_lossy(&mounted.stderr)
     );
-    let mounted_output = String::from_utf8(mounted.stdout)?;
-    let session_id = parse_session_id(&mounted_output).ok_or("missing session id")?;
+    let mounted_json: serde_json::Value = serde_json::from_slice(&mounted.stdout)?;
+    assert_eq!(mounted_json["schema_version"], 1);
+    assert_eq!(mounted_json["state"], "active");
+    assert_eq!(mounted_json["object"], 0);
+    let session_id = mounted_json["session_id"]
+        .as_str()
+        .ok_or("missing session id")?
+        .to_owned();
     let session_directory = state.join("sessions").join(&session_id);
     let session_file = session_directory.join("session.json");
     let session: serde_json::Value = serde_json::from_slice(&fs::read(&session_file)?)?;
@@ -238,12 +257,14 @@ fn managed_mount_status_and_unmount_are_recoverable() -> Result<(), Box<dyn std:
     assert_eq!(session["nfs_mounted"], true);
 
     let mut status = Command::new(env!("CARGO_BIN_EXE_rdrkit"));
-    status.arg("status");
+    status.args(["status", "--json"]);
     configure(&mut status);
     let status_output = status.output()?;
     assert!(status_output.status.success());
-    let status_text = String::from_utf8(status_output.stdout)?;
-    assert!(status_text.contains("state=active"), "{status_text}");
+    let status_json: serde_json::Value = serde_json::from_slice(&status_output.stdout)?;
+    assert_eq!(status_json["schema_version"], 1);
+    assert_eq!(status_json["sessions"][0]["session_id"], session_id);
+    assert_eq!(status_json["sessions"][0]["state"], "active");
 
     let mut first_unmount = Command::new(env!("CARGO_BIN_EXE_rdrkit"));
     first_unmount.args(["unmount", &session_id]);
@@ -255,7 +276,7 @@ fn managed_mount_status_and_unmount_are_recoverable() -> Result<(), Box<dyn std:
     assert_eq!(interrupted["complete"], false);
 
     let mut retry = Command::new(env!("CARGO_BIN_EXE_rdrkit"));
-    retry.args(["unmount", &session_id]);
+    retry.args(["unmount", &session_id, "--json"]);
     configure(&mut retry);
     let retry_result = retry.output()?;
     assert!(
@@ -263,6 +284,10 @@ fn managed_mount_status_and_unmount_are_recoverable() -> Result<(), Box<dyn std:
         "{}",
         String::from_utf8_lossy(&retry_result.stderr)
     );
+    let unmounted_json: serde_json::Value = serde_json::from_slice(&retry_result.stdout)?;
+    assert_eq!(unmounted_json["schema_version"], 1);
+    assert_eq!(unmounted_json["session_id"], session_id);
+    assert_eq!(unmounted_json["state"], "unmounted");
     assert!(!session_directory.exists());
     wait_for_process_exit(server_pid)?;
     server_guard.disarm();
@@ -296,12 +321,6 @@ impl Drop for ProcessGuard {
                 .status();
         }
     }
-}
-
-fn parse_session_id(output: &str) -> Option<String> {
-    output
-        .split_whitespace()
-        .find_map(|item| item.strip_prefix("session=").map(str::to_owned))
 }
 
 fn wait_for_process_exit(pid: u32) -> Result<(), Box<dyn std::error::Error>> {
