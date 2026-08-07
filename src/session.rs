@@ -28,8 +28,12 @@ struct MountSession {
     listen_port: u16,
     nfs_mount: PathBuf,
     raw_file: PathBuf,
+    #[serde(default)]
+    nfs_mounted: bool,
     device: Option<String>,
     volumes: Vec<MountedVolume>,
+    #[serde(default)]
+    complete: bool,
     platform: String,
     created_unix_seconds: u64,
 }
@@ -45,8 +49,8 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
     let directory = sessions_root()?.join(&id);
     let nfs_mount = directory.join("nfs");
     let volumes_root = directory.join("volumes");
-    fs::create_dir_all(&nfs_mount)
-        .with_context(|| format!("create session directory {}", directory.display()))?;
+    create_private_directory(&directory)?;
+    fs::create_dir_all(&nfs_mount)?;
     fs::create_dir_all(&volumes_root)?;
 
     let ready_file = directory.join("server.ready");
@@ -56,6 +60,7 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
         Ok(port) => port,
         Err(error) => {
             stop_child(&mut server);
+            let _ = fs::remove_dir_all(&directory);
             return Err(error);
         }
     };
@@ -70,21 +75,42 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
         listen_port,
         nfs_mount,
         raw_file,
+        nfs_mounted: false,
         device: None,
         volumes: Vec::new(),
+        complete: false,
         platform: std::env::consts::OS.to_owned(),
         created_unix_seconds: unix_seconds()?,
     };
 
-    let result = (|| {
+    if let Err(error) = write_session(&directory, &session) {
+        stop_child(&mut server);
+        let _ = fs::remove_dir_all(&directory);
+        return Err(error).context("persist initial mount session");
+    }
+
+    let result = (|| -> Result<()> {
         mount_nfs(&session)?;
-        attach_host_device(&mut session, &volumes_root)?;
+        session.nfs_mounted = true;
+        write_session(&directory, &session)?;
+        attach_host_device(&mut session, &directory, &volumes_root)?;
+        session.complete = true;
         write_session(&directory, &session)
     })();
     if let Err(error) = result {
-        rollback_mount(&session);
-        stop_child(&mut server);
-        return Err(error).context("mount session failed and was rolled back");
+        session.complete = false;
+        let _ = write_session(&directory, &session);
+        return match cleanup_resources(&directory, &mut session) {
+            Ok(()) => {
+                stop_child(&mut server);
+                let _ = fs::remove_dir_all(&directory);
+                Err(error).context("mount session failed and was rolled back")
+            }
+            Err(cleanup_error) => Err(error).context(format!(
+                "mount session failed; cleanup also failed: {cleanup_error:#}; session {} was preserved for `rdrkit unmount {}`",
+                session.id, session.id
+            )),
+        };
     }
 
     println!(
@@ -110,10 +136,11 @@ pub(crate) fn mount(image: &Path, requested_object: Option<u32>) -> Result<()> {
 pub(crate) fn unmount(target: &str) -> Result<()> {
     ensure_supported_host()?;
     let directory = resolve_session(target)?;
-    let session = read_session(&directory)?;
+    let mut session = read_session(&directory)?;
 
-    detach_host_device(&session)?;
-    unmount_nfs(&session)?;
+    session.complete = false;
+    write_session(&directory, &session)?;
+    cleanup_resources(&directory, &mut session)?;
     stop_server(&session)?;
     fs::remove_dir_all(&directory)
         .with_context(|| format!("remove session directory {}", directory.display()))?;
@@ -132,10 +159,12 @@ pub(crate) fn status() -> Result<()> {
         return Ok(());
     }
     for (_, session) in sessions {
-        let state = if server_is_running(&session) {
+        let state = if !server_is_running(&session) {
+            "stale"
+        } else if session.complete {
             "active"
         } else {
-            "stale"
+            "incomplete"
         };
         println!(
             "session={} state={} image={} object={} device={} volumes={}",
@@ -261,7 +290,11 @@ fn mount_nfs(session: &MountSession) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn attach_host_device(session: &mut MountSession, _volumes_root: &Path) -> Result<()> {
+fn attach_host_device(
+    session: &mut MountSession,
+    directory: &Path,
+    _volumes_root: &Path,
+) -> Result<()> {
     let output = run_checked(
         Command::new("hdiutil")
             .args(["attach", "-readonly", "-nomount", "-imagekey"])
@@ -272,6 +305,7 @@ fn attach_host_device(session: &mut MountSession, _volumes_root: &Path) -> Resul
     let text = String::from_utf8(output.stdout).context("hdiutil returned non-UTF-8 output")?;
     let device = parse_macos_whole_disk(&text).context("hdiutil did not report a whole disk")?;
     session.device = Some(device.clone());
+    write_session(directory, session)?;
 
     let _ = run_checked(
         Command::new("diskutil").args(["mountDisk", &device]),
@@ -289,7 +323,11 @@ fn mounted_macos_volumes(device: &str) -> Result<Vec<MountedVolume>> {
 }
 
 #[cfg(target_os = "linux")]
-fn attach_host_device(session: &mut MountSession, volumes_root: &Path) -> Result<()> {
+fn attach_host_device(
+    session: &mut MountSession,
+    directory: &Path,
+    volumes_root: &Path,
+) -> Result<()> {
     let output = run_checked(
         Command::new("sudo")
             .args(["losetup", "--find", "--show", "--read-only", "--partscan"])
@@ -302,18 +340,9 @@ fn attach_host_device(session: &mut MountSession, volumes_root: &Path) -> Result
         .to_owned();
     ensure!(!device.is_empty(), "losetup did not report a loop device");
     session.device = Some(device.clone());
+    write_session(directory, session)?;
 
-    let output = run_checked(
-        Command::new("lsblk")
-            .args(["--json", "--paths", "--output", "PATH,TYPE,FSTYPE,LABEL"])
-            .arg(&device),
-        "inspect loop device filesystems",
-    )?;
-    let listing: Lsblk = serde_json::from_slice(&output.stdout).context("decode lsblk output")?;
-    let mut candidates = Vec::new();
-    for block in &listing.blockdevices {
-        collect_mountable_blocks(block, &mut candidates);
-    }
+    let candidates = wait_for_linux_filesystems(&device)?;
     ensure!(
         !candidates.is_empty(),
         "loop device contains no filesystems recognized by lsblk"
@@ -332,6 +361,7 @@ fn attach_host_device(session: &mut MountSession, volumes_root: &Path) -> Result
             source,
             mount_point,
         });
+        write_session(directory, session)?;
     }
     Ok(())
 }
@@ -355,7 +385,7 @@ struct BlockDevice {
 
 #[cfg(target_os = "linux")]
 fn collect_mountable_blocks(block: &BlockDevice, output: &mut Vec<String>) {
-    if block.fstype.as_ref().is_some_and(|value| !value.is_empty())
+    if block.fstype.as_deref().is_some_and(is_mountable_fstype)
         && matches!(block.kind.as_str(), "loop" | "part")
     {
         output.push(block.path.clone());
@@ -365,35 +395,77 @@ fn collect_mountable_blocks(block: &BlockDevice, output: &mut Vec<String>) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn wait_for_linux_filesystems(device: &str) -> Result<Vec<String>> {
+    let started = std::time::Instant::now();
+    loop {
+        let output = run_checked(
+            Command::new("lsblk")
+                .args(["--json", "--paths", "--output", "PATH,TYPE,FSTYPE,LABEL"])
+                .arg(device),
+            "inspect loop device filesystems",
+        )?;
+        let listing: Lsblk =
+            serde_json::from_slice(&output.stdout).context("decode lsblk output")?;
+        let mut candidates = Vec::new();
+        for block in &listing.blockdevices {
+            collect_mountable_blocks(block, &mut candidates);
+        }
+        if !candidates.is_empty() || started.elapsed() >= Duration::from_secs(2) {
+            return Ok(candidates);
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn is_mountable_fstype(value: &str) -> bool {
+    !value.is_empty()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "swap" | "crypto_luks" | "lvm2_member" | "linux_raid_member" | "zfs_member"
+        )
+}
+
 #[cfg(target_os = "macos")]
-fn detach_host_device(session: &MountSession) -> Result<()> {
+fn detach_host_device(session: &mut MountSession, directory: &Path) -> Result<()> {
     if let Some(device) = &session.device {
         run_checked(
             Command::new("hdiutil").args(["detach", device]),
             "detach disk image",
         )?;
+        session.device = None;
+        session.volumes.clear();
+        write_session(directory, session)?;
     }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn detach_host_device(session: &MountSession) -> Result<()> {
-    for volume in session.volumes.iter().rev() {
+fn detach_host_device(session: &mut MountSession, directory: &Path) -> Result<()> {
+    while let Some(volume) = session.volumes.last().cloned() {
         run_checked(
             Command::new("sudo").arg("umount").arg(&volume.mount_point),
             "unmount filesystem",
         )?;
+        session.volumes.pop();
+        write_session(directory, session)?;
     }
     if let Some(device) = &session.device {
         run_checked(
             Command::new("sudo").args(["losetup", "--detach", device]),
             "detach loop device",
         )?;
+        session.device = None;
+        write_session(directory, session)?;
     }
     Ok(())
 }
 
-fn unmount_nfs(session: &MountSession) -> Result<()> {
+fn unmount_nfs(session: &mut MountSession, directory: &Path) -> Result<()> {
+    if !session.nfs_mounted {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     run_checked(
         Command::new("umount").arg(&session.nfs_mount),
@@ -404,12 +476,14 @@ fn unmount_nfs(session: &MountSession) -> Result<()> {
         Command::new("sudo").arg("umount").arg(&session.nfs_mount),
         "unmount localhost NFS export",
     )?;
+    session.nfs_mounted = false;
+    write_session(directory, session)?;
     Ok(())
 }
 
-fn rollback_mount(session: &MountSession) {
-    let _ = detach_host_device(session);
-    let _ = unmount_nfs(session);
+fn cleanup_resources(directory: &Path, session: &mut MountSession) -> Result<()> {
+    detach_host_device(session, directory)?;
+    unmount_nfs(session, directory)
 }
 
 fn run_checked(command: &mut Command, action: &str) -> Result<Output> {
@@ -428,7 +502,28 @@ fn write_session(directory: &Path, session: &MountSession) -> Result<()> {
     let temporary = directory.join("session.json.tmp");
     let bytes = serde_json::to_vec_pretty(session)?;
     fs::write(&temporary, bytes)?;
+    set_private_permissions(&temporary, 0o600)?;
     fs::rename(&temporary, &target)?;
+    Ok(())
+}
+
+fn create_private_directory(directory: &Path) -> Result<()> {
+    fs::create_dir_all(directory)
+        .with_context(|| format!("create session directory {}", directory.display()))?;
+    set_private_permissions(directory, 0o700)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_permissions(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_permissions(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
@@ -553,7 +648,10 @@ fn server_is_running(session: &MountSession) -> bool {
     if !output.status.success() {
         return false;
     }
-    let command = String::from_utf8_lossy(&output.stdout);
+    server_command_matches(session, &String::from_utf8_lossy(&output.stdout))
+}
+
+fn server_command_matches(session: &MountSession, command: &str) -> bool {
     command.contains("rdrkit")
         && command.contains(" serve ")
         && command.contains(session.image.to_string_lossy().as_ref())
@@ -647,11 +745,13 @@ mod tests {
             listen_port: 12_345,
             nfs_mount: PathBuf::from("/state/nfs"),
             raw_file: PathBuf::from("/state/nfs/object-3.raw"),
+            nfs_mounted: true,
             device: Some("/dev/disk9".to_owned()),
             volumes: vec![MountedVolume {
                 source: "/dev/disk9s1".to_owned(),
                 mount_point: PathBuf::from("/Volumes/Data"),
             }],
+            complete: true,
             platform: "macos".to_owned(),
             created_unix_seconds: 123,
         };
@@ -660,7 +760,63 @@ mod tests {
         assert_eq!(decoded.id, session.id);
         assert_eq!(decoded.image, session.image);
         assert_eq!(decoded.volumes[0].mount_point, Path::new("/Volumes/Data"));
+        assert!(decoded.nfs_mounted);
+        assert!(decoded.complete);
         Ok(())
+    }
+
+    #[test]
+    fn older_session_state_defaults_lifecycle_flags() -> Result<()> {
+        let encoded = r#"{
+            "version": 1,
+            "id": "session-1",
+            "image": "/images/backup.rdr",
+            "object": 3,
+            "server_pid": 42,
+            "listen_port": 12345,
+            "nfs_mount": "/state/nfs",
+            "raw_file": "/state/nfs/object-3.raw",
+            "device": null,
+            "volumes": [],
+            "platform": "macos",
+            "created_unix_seconds": 123
+        }"#;
+        let session: MountSession = serde_json::from_str(encoded)?;
+        assert!(!session.nfs_mounted);
+        assert!(!session.complete);
+        Ok(())
+    }
+
+    #[test]
+    fn matches_only_the_recorded_server_process() {
+        let session = MountSession {
+            version: 1,
+            id: "session-1".to_owned(),
+            image: PathBuf::from("/images/backup with spaces.rdr"),
+            object: 3,
+            server_pid: 42,
+            listen_port: 12_345,
+            nfs_mount: PathBuf::from("/state/nfs"),
+            raw_file: PathBuf::from("/state/nfs/object-3.raw"),
+            nfs_mounted: true,
+            device: None,
+            volumes: Vec::new(),
+            complete: true,
+            platform: "macos".to_owned(),
+            created_unix_seconds: 123,
+        };
+        assert!(server_command_matches(
+            &session,
+            "/usr/local/bin/rdrkit serve '/images/backup with spaces.rdr' --object 3"
+        ));
+        assert!(!server_command_matches(
+            &session,
+            "/usr/local/bin/rdrkit list '/images/backup with spaces.rdr'"
+        ));
+        assert!(!server_command_matches(
+            &session,
+            "/usr/local/bin/rdrkit serve /images/other.rdr --object 3"
+        ));
     }
 
     #[test]
@@ -673,5 +829,24 @@ mod tests {
         collect_mountable_blocks(&listing.blockdevices[0], &mut found);
         assert_eq!(found, ["/dev/loop0p1"]);
         Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn rejects_linux_container_filesystems() {
+        for value in [
+            "swap",
+            "crypto_LUKS",
+            "LVM2_member",
+            "linux_raid_member",
+            "zfs_member",
+        ] {
+            assert!(
+                !is_mountable_fstype(value),
+                "unexpected mountable type: {value}"
+            );
+        }
+        assert!(is_mountable_fstype("ntfs"));
+        assert!(is_mountable_fstype("ext4"));
     }
 }

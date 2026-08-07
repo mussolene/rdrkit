@@ -542,12 +542,20 @@ fn serve(image: &Path, object_index: u32, listen: &str, ready_file: Option<&Path
         let listen_port = listener.get_listen_port();
         println!("NFS ready_port={listen_port}");
         if let Some(path) = ready_file {
-            std::fs::write(path, listen_port.to_string())
-                .with_context(|| format!("write readiness file {}", path.display()))?;
+            write_ready_file(path, listen_port)?;
         }
         listener.handle_forever().await?;
         Ok::<(), anyhow::Error>(())
     })?;
+    Ok(())
+}
+
+fn write_ready_file(path: &Path, listen_port: u16) -> Result<()> {
+    let temporary = path.with_extension("tmp");
+    std::fs::write(&temporary, listen_port.to_string())
+        .with_context(|| format!("write readiness file {}", temporary.display()))?;
+    std::fs::rename(&temporary, path)
+        .with_context(|| format!("publish readiness file {}", path.display()))?;
     Ok(())
 }
 
