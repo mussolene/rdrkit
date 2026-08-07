@@ -10,6 +10,7 @@ const MAGIC: u32 = 0xd754_da33;
 const FILE_HEADER_SIZE: u64 = 52;
 const RAW_DATA_FLAGS: u32 = 0x1800_0020;
 const RAW_CHUNK_INDEX_FLAGS: u32 = 0x0800_0090;
+const ZLIB_CHUNK_INDEX_FLAGS: u32 = 0x0804_0290;
 const ARCHIVE_DIRECTORY_FLAGS: u32 = 0x0000_0008;
 const DIRECTORY_POINTER_FLAGS: u32 = 0x0000_0003;
 const EMPTY_DISK_SIZE: u64 = 1024 * 1024;
@@ -73,7 +74,17 @@ fn committed_empty_disk_fixtures_are_current() -> Result<(), Box<dyn std::error:
         let generated = directory.join(name);
         let tracked = fixtures.join(name);
         write_empty_disk_image(&generated, compressed)?;
-        assert_eq!(fs::read(&generated)?, fs::read(&tracked)?);
+        let generated_bytes = fs::read(&generated)?;
+        let tracked_bytes = fs::read(&tracked)?;
+        assert_eq!(generated_bytes, tracked_bytes);
+        let index_flags = if compressed {
+            ZLIB_CHUNK_INDEX_FLAGS
+        } else {
+            RAW_CHUNK_INDEX_FLAGS
+        };
+        assert!(tracked_bytes
+            .windows(4)
+            .any(|bytes| bytes == index_flags.to_le_bytes()));
 
         let list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
             .arg("list")
@@ -496,21 +507,42 @@ fn write_empty_disk_image(path: &Path, compressed: bool) -> Result<(), Box<dyn s
         }
     }
 
-    let index_offset = image.len() as u64;
-    let index_length = 48_u32 + chunk_count * 12;
-    let mut index = vec![0_u8; index_length as usize];
-    index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
-    index[4..8].copy_from_slice(&index_length.to_le_bytes());
-    index[8..12].copy_from_slice(&RAW_CHUNK_INDEX_FLAGS.to_le_bytes());
-    index[12..16].copy_from_slice(&0_u32.to_le_bytes());
-    index[20..28].copy_from_slice(&logical_size.to_le_bytes());
-    index[36..44].copy_from_slice(&EMPTY_DISK_CHUNK_SIZE.to_le_bytes());
-    index[44..48].copy_from_slice(&chunk_count.to_le_bytes());
+    let mut decoded_index = vec![0_u8; 28 + chunk_count as usize * 12];
+    decoded_index[0..8].copy_from_slice(&logical_size.to_le_bytes());
+    decoded_index[16..24].copy_from_slice(&EMPTY_DISK_CHUNK_SIZE.to_le_bytes());
+    decoded_index[24..28].copy_from_slice(&chunk_count.to_le_bytes());
     for (entry, (data_offset, data_length)) in chunks.iter().enumerate() {
-        let start = 48 + entry * 12;
-        index[start..start + 8].copy_from_slice(&(data_offset - FILE_HEADER_SIZE).to_le_bytes());
-        index[start + 8..start + 12].copy_from_slice(&data_length.to_le_bytes());
+        let start = 28 + entry * 12;
+        decoded_index[start..start + 8]
+            .copy_from_slice(&(data_offset - FILE_HEADER_SIZE).to_le_bytes());
+        decoded_index[start + 8..start + 12].copy_from_slice(&data_length.to_le_bytes());
     }
+
+    let index_offset = image.len() as u64;
+    let index = if compressed {
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        encoder.write_all(&decoded_index)?;
+        let payload = encoder.finish()?;
+        let index_length = 24_u32 + payload.len() as u32;
+        let mut index = vec![0_u8; 24];
+        index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        index[4..8].copy_from_slice(&index_length.to_le_bytes());
+        index[8..12].copy_from_slice(&ZLIB_CHUNK_INDEX_FLAGS.to_le_bytes());
+        index[12..16].copy_from_slice(&(decoded_index.len() as u32).to_le_bytes());
+        index[16..20].copy_from_slice(&0_u32.to_le_bytes());
+        index.extend_from_slice(&payload);
+        index
+    } else {
+        let index_length = 20_u32 + decoded_index.len() as u32;
+        let mut index = vec![0_u8; 20];
+        index[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        index[4..8].copy_from_slice(&index_length.to_le_bytes());
+        index[8..12].copy_from_slice(&RAW_CHUNK_INDEX_FLAGS.to_le_bytes());
+        index[12..16].copy_from_slice(&0_u32.to_le_bytes());
+        index.extend_from_slice(&decoded_index);
+        index
+    };
+    let index_length = index.len() as u32;
     image.extend_from_slice(&index);
 
     let directory_offset = image.len() as u64;
