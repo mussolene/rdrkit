@@ -9,12 +9,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 const MAGIC: u32 = 0xd754_da33;
 const FILE_HEADER_SIZE: u64 = 52;
 const RAW_DATA_FLAGS: u32 = 0x1800_0020;
+const ZLIB_DATA_FLAGS: u32 = 0x1804_0220;
 const RAW_CHUNK_INDEX_FLAGS: u32 = 0x0800_0090;
 const ZLIB_CHUNK_INDEX_FLAGS: u32 = 0x0804_0290;
 const ARCHIVE_DIRECTORY_FLAGS: u32 = 0x0000_0008;
 const DIRECTORY_POINTER_FLAGS: u32 = 0x0000_0003;
 const EMPTY_DISK_SIZE: u64 = 1024 * 1024;
 const EMPTY_DISK_CHUNK_SIZE: u64 = 256 * 1024;
+const RDR_ZLIB_LEVEL: u32 = 3;
+const RDR_ZLIB_HEADER: [u8; 2] = [0x78, 0x5e];
 const EMPTY_DISK_FIXTURES: [(&str, bool); 2] =
     [("empty-disk-zlib.rdr", true), ("empty-disk-raw.rdr", false)];
 
@@ -85,6 +88,19 @@ fn committed_empty_disk_fixtures_are_current() -> Result<(), Box<dyn std::error:
         assert!(tracked_bytes
             .windows(4)
             .any(|bytes| bytes == index_flags.to_le_bytes()));
+        if compressed {
+            let mut offset = FILE_HEADER_SIZE as usize;
+            for _ in 0..4 {
+                assert_eq!(fixture_u32(&tracked_bytes, offset + 8), ZLIB_DATA_FLAGS);
+                assert_eq!(tracked_bytes[offset + 40..offset + 42], RDR_ZLIB_HEADER);
+                offset += fixture_u32(&tracked_bytes, offset + 4) as usize;
+            }
+            assert_eq!(
+                fixture_u32(&tracked_bytes, offset + 8),
+                ZLIB_CHUNK_INDEX_FLAGS
+            );
+            assert_eq!(tracked_bytes[offset + 24..offset + 26], RDR_ZLIB_HEADER);
+        }
 
         let list = Command::new(env!("CARGO_BIN_EXE_rdrkit"))
             .arg("list")
@@ -467,8 +483,6 @@ fn write_empty_disk_image(path: &Path, compressed: bool) -> Result<(), Box<dyn s
     use flate2::write::ZlibEncoder;
     use flate2::Compression;
 
-    const ZLIB_DATA_FLAGS: u32 = 0x1804_0220;
-
     let mut image = vec![0_u8; FILE_HEADER_SIZE as usize];
     let logical_size = EMPTY_DISK_SIZE;
     let chunk_count = logical_size.div_ceil(EMPTY_DISK_CHUNK_SIZE) as u32;
@@ -480,7 +494,7 @@ fn write_empty_disk_image(path: &Path, compressed: bool) -> Result<(), Box<dyn s
         let data_offset = image.len() as u64;
 
         if compressed {
-            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+            let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(RDR_ZLIB_LEVEL));
             encoder.write_all(&vec![0_u8; logical_length as usize])?;
             let payload = encoder.finish()?;
             let data_length = 40_u32 + payload.len() as u32;
@@ -520,7 +534,7 @@ fn write_empty_disk_image(path: &Path, compressed: bool) -> Result<(), Box<dyn s
 
     let index_offset = image.len() as u64;
     let index = if compressed {
-        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(RDR_ZLIB_LEVEL));
         encoder.write_all(&decoded_index)?;
         let payload = encoder.finish()?;
         let index_length = 24_u32 + payload.len() as u32;
@@ -578,4 +592,8 @@ fn temporary_directory(label: &str) -> Result<PathBuf, Box<dyn std::error::Error
     let path = std::env::temp_dir().join(format!("rdrkit-{label}-{}-{nonce}", std::process::id()));
     fs::create_dir(&path)?;
     Ok(path)
+}
+
+fn fixture_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("u32 slice"))
 }
