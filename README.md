@@ -38,6 +38,10 @@ then delegates filesystem handling to mature host tools.
 
 The source RDR archive is never opened for writing.
 
+The `v0.2.0-rc.1` Linux binaries are release candidates. Their compilation and
+unprivileged lifecycle tests are covered by CI, while native privileged mount
+validation remains required before the stable `v0.2.0` release.
+
 ## Quick start
 
 ### 1. Install
@@ -47,10 +51,13 @@ Download the archive for your platform from
 `SHA256SUMS`, then install the binary:
 
 ```sh
-tar -xzf rdrkit-v0.2.0-<target>.tar.gz
-chmod +x rdrkit
-sudo install -m 0755 rdrkit /usr/local/bin/rdrkit
+archive="rdrkit-v0.2.0-rc.1-aarch64-apple-darwin"
+tar -xzf "${archive}.tar.gz"
+chmod +x "${archive}/rdrkit"
+sudo install -m 0755 "${archive}/rdrkit" /usr/local/bin/rdrkit
 ```
+
+Replace the example target with the target for your platform.
 
 Or build from source:
 

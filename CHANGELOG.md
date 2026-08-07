@@ -6,7 +6,7 @@ All notable changes are documented here. The project follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-08-07
+## [0.2.0-rc.1] - 2026-08-07
 
 ### Added
 
@@ -30,6 +30,11 @@ All notable changes are documented here. The project follows
 - Lightweight macOS application and `.rdr` file association.
 - Additional RDR variants and integrity metadata.
 
+### Known limitations
+
+- Native privileged Linux mount and interrupted-cleanup smoke tests remain
+  required before the stable `v0.2.0` release.
+
 ## [0.1.0] - 2026-07-14
 
 ### Added
@@ -41,6 +46,6 @@ All notable changes are documented here. The project follows
 - macOS and Linux operating instructions.
 - CI, release binaries, dependency auditing, license checks, and secret scans.
 
-[Unreleased]: https://github.com/mussolene/rdrkit/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/mussolene/rdrkit/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/mussolene/rdrkit/compare/v0.2.0-rc.1...HEAD
+[0.2.0-rc.1]: https://github.com/mussolene/rdrkit/compare/v0.1.0...v0.2.0-rc.1
 [0.1.0]: https://github.com/mussolene/rdrkit/releases/tag/v0.1.0

@@ -27,6 +27,13 @@ gitleaks detect --source . --no-banner --redact
 
 Do not release if any check is skipped or failing.
 
+## Release candidates
+
+A release candidate may be published before every native host check is
+complete only when all automated checks pass, GitHub marks the release as a
+prerelease, and the missing host validation is stated in the changelog and
+release notes. Stable releases still require every native host check below.
+
 For a release that changes mount orchestration, also perform these host checks:
 
 1. On macOS, mount a representative indexed image, confirm every reported
