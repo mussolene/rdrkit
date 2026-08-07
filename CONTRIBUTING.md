@@ -10,6 +10,18 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-features --locked
 ```
 
+On macOS, also test the native application and assemble its signed bundle:
+
+```sh
+swift test --package-path macos/RDRKitApp
+./scripts/build-macos-app.sh
+```
+
+The build script places `RDRKit.app` under `target/macos`. It uses an ad hoc
+signature unless `RDRKIT_CODESIGN_IDENTITY` names an installed signing
+identity. Keep the command-line JSON schema backward compatible because the
+application consumes it.
+
 No proprietary binaries, confidential disk images, extracted customer data,
 or reverse-engineered source code may be committed. Tests must use synthetic
 fixtures or independently redistributable data.
@@ -31,6 +43,7 @@ cargo test regenerate_empty_disks_fixture -- --ignored
 - Keep source-image access read-only.
 - Add tests for parser changes and malformed input.
 - Add lifecycle tests for session-state changes and cleanup behavior.
+- Add Swift decoding tests when the JSON contract changes.
 - Exercise platform-specific branches on their native host or in a matching
   Linux container before requesting review.
 - Use focused commits following Conventional Commits, for example

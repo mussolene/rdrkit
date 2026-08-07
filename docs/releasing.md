@@ -19,6 +19,8 @@ cargo fmt --all -- --check
 cargo clippy --all-targets --all-features --locked -- -D warnings
 cargo test --all-features --locked
 cargo build --release --locked
+swift test --package-path macos/RDRKitApp
+./scripts/build-macos-app.sh
 cargo audit --deny warnings
 cargo deny check
 actionlint
@@ -26,6 +28,11 @@ gitleaks detect --source . --no-banner --redact
 ```
 
 Do not release if any check is skipped or failing.
+
+The release workflow currently publishes command-line archives. Do not attach
+the macOS application for general distribution until its Developer ID signing
+and Apple notarization are configured and verified. Ad hoc signing is suitable
+for local development only.
 
 ## Release candidates
 
@@ -44,6 +51,9 @@ For a release that changes mount orchestration, also perform these host checks:
    session, and verify that retrying `unmount` completes cleanup.
 4. Confirm the localhost listener, NFS mount, raw device, filesystem mounts,
    and server process are all gone after cleanup.
+5. Launch the macOS application, open a multi-object image from Finder, mount
+   one object, mount all objects, open a recognized volume, and unmount every
+   created session.
 
 Do not substitute a successful `serve` test for the native mount checks. CI can
 validate parsing, process startup, and platform compilation, but it does not
