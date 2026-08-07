@@ -17,6 +17,8 @@ async-trait = "0.1"
 clap = { version = "4.5", features = ["derive"] }
 flate2 = "1.1"
 nfsserve = "0.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync"] }
 
 [profile.release]
