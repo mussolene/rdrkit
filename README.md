@@ -93,6 +93,17 @@ You can also unmount by the session id printed by `mount`. Unmounting detaches
 the filesystems and raw device, unmounts the localhost NFS export, stops the
 matching `rdrkit serve` process, and removes the session state.
 
+`status` reports `active`, `incomplete`, or `stale`. An incomplete session was
+interrupted while resources were being attached or removed. Retry
+`rdrkit unmount SESSION` to continue cleanup from the last persisted step. A
+session id remains usable even if the source image was moved or deleted.
+
+Session metadata and server logs are stored under
+`~/Library/Application Support/rdrkit/sessions` on macOS and
+`${XDG_STATE_HOME:-$HOME/.local/state}/rdrkit/sessions` on Linux. Set
+`RDRKIT_STATE_DIR` to override the parent directory. Session directories are
+created with user-only permissions and may contain the source image path.
+
 ### List objects without mounting
 
 This reads the embedded archive directory and compact indexes; it does not scan
@@ -263,6 +274,11 @@ validate instead of returning potentially corrupted bytes.
   localhost listener.
 - The NFS listener defaults to `127.0.0.1`; do not expose it to an untrusted
   network.
+- Read-only mounting protects the source image from writes, but it does not make
+  a malformed filesystem safe for the host filesystem driver. Use an isolated,
+  fully updated system or virtual machine for hostile or unknown images.
+- Managed Linux mounts request elevated access only for `mount`, `umount`, and
+  `losetup`; parsing and the server run without elevated privileges.
 - Disk images, raw files, private keys, logs, and local environment files are
   excluded by `.gitignore`.
 - CI runs secret scanning, dependency vulnerability checks, and license/source

@@ -27,6 +27,21 @@ gitleaks detect --source . --no-banner --redact
 
 Do not release if any check is skipped or failing.
 
+For a release that changes mount orchestration, also perform these host checks:
+
+1. On macOS, mount a representative indexed image, confirm every reported
+   volume is read-only, run `rdrkit status`, and unmount by session id.
+2. On Linux, repeat the managed workflow with a partitioned image and confirm
+   that `losetup --partscan` discovers the expected filesystem-bearing slices.
+3. Interrupt one mount or unmount operation, confirm `status` reports the saved
+   session, and verify that retrying `unmount` completes cleanup.
+4. Confirm the localhost listener, NFS mount, raw device, filesystem mounts,
+   and server process are all gone after cleanup.
+
+Do not substitute a successful `serve` test for the native mount checks. CI can
+validate parsing, process startup, and platform compilation, but it does not
+exercise privileged host mount operations.
+
 ## Tag
 
 Create a focused release commit using Conventional Commits, then an annotated
